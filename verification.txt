@@ -1,0 +1,355 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- 1. Paramètres de la simulation ---
+nx, ny = 40, 30    # Nombre de CELLULES en x et y
+L, D = 0.02, 0.005    # Longueur (2 cm) et Hauteur (5 mm) du domaine
+eta = 1.8e-5          # Viscosité de l'air
+
+# Conditions aux limites de Pression
+P_inlet = 101400     # Pression P1 à l'entrée
+P_out = 101325        # Pression P2 à la sortie
+
+# Pas de maillage
+hx = L / nx
+hy = D / ny
+
+# --- 2. Configuration de la Grille Décalée (MAC) ---
+n_u = (nx + 1) * ny    # Faces verticales
+n_v = nx * (ny + 1)    # Faces horizontales
+n_p = nx * ny          # Centres des cellules
+N_total = n_u + n_v + n_p
+
+print("="*70)
+print("GRILLE DÉCALÉE (MAC) - STOKES avec CL Pression")
+print("="*70)
+print(f"Domaine: {L*1000:.1f} mm × {D*1000:.1f} mm")
+print(f"Cellules de pression: {nx} × {ny} = {n_p}")
+print(f"Nœuds u (faces vert.): {(nx + 1)} × {ny} = {n_u}")
+print(f"Nœuds v (faces horiz.): {nx} × {(ny + 1)} = {n_v}")
+print(f"Total inconnues: {N_total}")
+print(f"Δx = {hx*1000:.3f} mm, Δy = {hy*1000:.3f} mm")
+print(f"μ = {eta:.2e} Pa·s")
+print(f"Pression entrée P1 = {P_inlet:.1f} Pa, Pression sortie P2 = {P_out:.1f} Pa")
+print(f"ΔP = {P_inlet - P_out:.1f} Pa")
+print("="*70 + "\n")
+
+# Fonctions d'indexation (Bijection 2D -> 1D)
+def idx_u(i, j):
+    """ Indice 1D pour u(i, j) - i dans [0, nx], j dans [0, ny-1] """
+    return i * ny + j
+
+def idx_v(i, j):
+    """ Indice 1D pour v(i, j) - i dans [0, nx-1], j dans [0, ny] """
+    return n_u + i * (ny + 1) + j
+
+def idx_p(i, j):
+    """ Indice 1D pour p(i, j) - i dans [0, nx-1], j dans [0, ny-1] """
+    return n_u + n_v + i * ny + j
+
+# Initialisation
+A = np.zeros((N_total, N_total))
+b = np.zeros(N_total)
+
+# Coefficients pour les équations
+c_eta_x = (eta * hy) / hx
+c_eta_y = (eta * hx) / hy
+c_p_x = 1.0 / hx
+c_p_y = 1.0 / hy
+
+print("Assemblage du système linéaire...")
+
+# --- 3. Remplissage de A et b ---
+
+# --- BLOC 1: Équations de Momentum-X (pour les nœuds u) ---
+for i in range(nx + 1):
+    for j in range(ny):
+        row = idx_u(i, j)
+
+        # CL Entrée (gauche, i=0): Neumann du/dx = 0 -> u(0,j) = u(1,j)
+        if i == 0:
+            A[row, idx_u(i, j)] = 1.0
+            A[row, idx_u(i + 1, j)] = -1.0
+            b[row] = 0.0
+        
+        # CL Sortie (droite, i=nx): Neumann du/dx = 0 -> u(nx,j) = u(nx-1,j)
+        elif i == nx:
+            A[row, idx_u(i, j)] = 1.0
+            A[row, idx_u(i - 1, j)] = -1.0
+            b[row] = 0.0
+
+        # Nœuds internes (i dans [1, nx-1])
+        else:
+            # Termes du Laplacien (Voisins en x)
+            A[row, idx_u(i + 1, j)] = c_eta_x
+            A[row, idx_u(i - 1, j)] = c_eta_x
+            A[row, row] = -2.0 * (c_eta_x + c_eta_y)
+            
+            # Voisins en y
+            # CL Mur du bas (j=0): u=0 -> u_ghost(i, -1) = -u(i, 0)
+            if j == 0:
+                A[row, idx_u(i, j + 1)] = c_eta_y
+                A[row, row] -= c_eta_y  # Terme fantôme
+            # CL Mur du haut (j=ny-1): u=0 -> u_ghost(i, ny) = -u(i, ny-1)
+            elif j == ny - 1:
+                A[row, idx_u(i, j - 1)] = c_eta_y
+                A[row, row] -= c_eta_y  # Terme fantôme
+            # Nœud interne en y
+            else:
+                A[row, idx_u(i, j + 1)] = c_eta_y
+                A[row, idx_u(i, j - 1)] = c_eta_y
+
+            # Terme de Gradient de Pression: -(p(i,j) - p(i-1,j)) / hx
+            A[row, idx_p(i, j)] = -hy 
+            A[row, idx_p(i - 1, j)] = hy
+
+# --- BLOC 2: Équations de Momentum-Y (pour les nœuds v) ---
+for i in range(nx):
+    for j in range(ny + 1):
+        row = idx_v(i, j)
+
+        # CL Murs (bas, j=0 et haut, j=ny): v = 0
+        if j == 0 or j == ny:
+            A[row, row] = 1.0
+            b[row] = 0.0
+        
+        # Nœuds internes (j dans [1, ny-1])
+        else:
+            # Termes du Laplacien (Voisins en y)
+            A[row, idx_v(i, j + 1)] = c_eta_y
+            A[row, idx_v(i, j - 1)] = c_eta_y
+            A[row, row] = -2.0 * (c_eta_x + c_eta_y)
+            
+            # Voisins en x
+            # CL Entrée (i=0): dv/dx = 0 -> v_ghost(-1, j) = v(0, j)
+            if i == 0:
+                A[row, idx_v(i + 1, j)] = c_eta_x
+                A[row, row] += c_eta_x  # Terme fantôme (dv/dx=0)
+            
+            # CL Sortie (i=nx-1): dv/dx = 0 -> v_ghost(nx, j) = v(nx-1, j)
+            elif i == nx - 1:
+                A[row, idx_v(i - 1, j)] = c_eta_x
+                A[row, row] += c_eta_x  # Terme fantôme (Neumann)
+            
+            # Nœud interne en x
+            else:
+                A[row, idx_v(i + 1, j)] = c_eta_x
+                A[row, idx_v(i - 1, j)] = c_eta_x
+            
+            # Terme de Gradient de Pression: -(p(i,j) - p(i,j-1)) / hy
+            A[row, idx_p(i, j)] = -hx
+            A[row, idx_p(i, j - 1)] = hx
+
+# --- BLOC 3: Équation de Continuité (pour les nœuds p) ---
+for i in range(nx):
+    for j in range(ny):
+        row = idx_p(i, j)
+
+        # CL Entrée (gauche, i=0): p = P_inlet
+        if i == 0:
+            A[row, row] = 1.0
+            b[row] = P_inlet
+            
+        # CL Sortie (droite, i=nx-1): p = P_out
+        elif i == nx - 1:
+            A[row, row] = 1.0
+            b[row] = P_out
+            
+        # Nœuds internes (Eq. de continuité div(u)=0)
+        else:
+            # div(u) = (u(i+1,j) - u(i,j))/hx + (v(i,j+1) - v(i,j))/hy = 0
+            A[row, idx_u(i + 1, j)] = c_p_x
+            A[row, idx_u(i, j)]     = -c_p_x
+            A[row, idx_v(i, j + 1)] = c_p_y
+            A[row, idx_v(i, j)]     = -c_p_y
+            b[row] = 0.0
+
+print(f"✓ Matrice assemblée: {N_total} × {N_total}")
+print(f"  Éléments non-nuls: {np.count_nonzero(A)} ({np.count_nonzero(A)/N_total**2*100:.3f}%)\n")
+
+# --- 4. Résolution du système ---
+print("Résolution du système linéaire Ax=b...")
+try:
+    solution = np.linalg.solve(A, b)
+    print("✓ Système résolu avec succès!\n")
+except np.linalg.LinAlgError:
+    print("✗ Erreur: La matrice A est singulière.")
+    exit()
+
+# --- 5. Post-traitement (Extraction et Interpolation) ---
+print("Post-traitement des résultats...")
+
+# Extraire les vecteurs 1D
+u_vec = solution[0 : n_u]
+v_vec = solution[n_u : n_u + n_v]
+p_vec = solution[n_u + n_v : N_total]
+
+# Mettre en forme les grilles 2D
+u = u_vec.reshape((nx + 1, ny))
+v = v_vec.reshape((nx, ny + 1))
+p = p_vec.reshape((nx, ny))
+
+# Interpoler u et v aux centres des cellules
+u_centered = np.zeros((nx, ny))
+v_centered = np.zeros((nx, ny))
+
+for i in range(nx):
+    for j in range(ny):
+        u_centered[i, j] = 0.5 * (u[i, j] + u[i + 1, j])
+        v_centered[i, j] = 0.5 * (v[i, j] + v[i, j + 1])
+
+# --- 6. VÉRIFICATION ---
+print("="*70)
+print("VÉRIFICATION DE LA SOLUTION")
+print("="*70)
+
+# 1. Divergence
+div_max = 0.0
+div_sum = 0.0
+count = 0
+
+for i in range(1, nx-1):
+    for j in range(ny):
+        du_dx = (u[i+1, j] - u[i, j]) / hx
+        dv_dy = (v[i, j+1] - v[i, j]) / hy
+        div = du_dx + dv_dy
+        div_max = max(div_max, abs(div))
+        div_sum += abs(div)
+        count += 1
+
+print(f"Divergence maximale:  {div_max:.2e} s⁻¹")
+print(f"Divergence moyenne:   {div_sum/count:.2e} s⁻¹")
+
+# 2. Conservation du débit
+Q_in = np.sum(u[1, :]) * hy
+Q_out = np.sum(u[-2, :]) * hy
+
+print(f"\nDébit entrée:  {Q_in:.6e} m²/s")
+print(f"Débit sortie:  {Q_out:.6e} m²/s")
+if abs(Q_in) > 1e-15:
+    print(f"Conservation:  {abs(Q_out-Q_in)/abs(Q_in)*100:.4f}%")
+else:
+    print(f"Écart absolu:  {abs(Q_out-Q_in):.2e} m²/s")
+
+# 3. Comparaison avec Poiseuille
+y_coords = np.linspace(hy/2, D - hy/2, ny)
+mid_i = nx // 2
+u_mid_profile = u_centered[mid_i, :]
+
+# Solution analytique de Poiseuille pour écoulement plan 2D
+dp_dx = (P_out - P_inlet) / L
+u_poiseuille = -dp_dx / (2*eta) * y_coords * (D - y_coords)
+
+error_rms = np.sqrt(np.mean((u_mid_profile - u_poiseuille)**2))
+error_rel = error_rms / np.max(np.abs(u_poiseuille)) if np.max(np.abs(u_poiseuille)) > 0 else 0
+
+print(f"\n--- Comparaison avec Poiseuille ---")
+print(f"Vitesse u max (numérique): {np.max(u):.6f} m/s")
+print(f"Vitesse u min (numérique): {np.min(u):.6f} m/s")
+print(f"Vitesse u max (théorique): {np.max(u_poiseuille):.6f} m/s")
+print(f"Erreur RMS:                {error_rms:.2e} m/s")
+print(f"Erreur relative:           {error_rel*100:.3f}%")
+
+# 4. Vitesse transverse v
+v_max = np.max(np.abs(v))
+v_mean = np.mean(np.abs(v_centered))
+
+print(f"\n--- Vitesse transverse v ---")
+print(f"v max (absolu):    {v_max:.2e} m/s")
+print(f"v moyen (absolu):  {v_mean:.2e} m/s")
+
+# 5. Pression
+P_in_calc = np.mean(p[0, :])
+P_out_calc = np.mean(p[-1, :])
+P_mean = np.mean(p)
+P_expected_mean = (P_inlet + P_out) / 2
+
+print(f"\n--- Pression ---")
+print(f"P entrée (imposée):   {P_inlet:.2f} Pa")
+print(f"P sortie (imposée):   {P_out:.2f} Pa")
+print(f"P entrée (vérifiée):  {P_in_calc:.2f} Pa")
+print(f"P sortie (vérifiée):  {P_out_calc:.2f} Pa")
+print(f"P min:                {np.min(p):.2f} Pa")
+print(f"P max:                {np.max(p):.2f} Pa")
+print(f"P moyen:              {P_mean:.2f} Pa (attendu: {P_expected_mean:.2f} Pa)")
+print("="*70 + "\n")
+
+# --- 7. Visualisation ---
+print("Affichage des graphiques...")
+
+# Créer les coordonnées pour les centres des cellules
+x_p_coords = np.linspace(hx / 2.0, L - hx / 2.0, nx)
+y_p_coords = np.linspace(hy / 2.0, D - hy / 2.0, ny)
+X, Y = np.meshgrid(x_p_coords, y_p_coords)
+
+fig = plt.figure(figsize=(16, 10))
+
+# 1. Pression
+ax1 = plt.subplot(2, 3, 1)
+cp1 = ax1.contourf(X*1000, Y*1000, p.T, levels=20, cmap='RdYlBu_r')
+plt.colorbar(cp1, ax=ax1, label='P (Pa)')
+ax1.set_title('Champ de Pression')
+ax1.set_xlabel('x (mm)')
+ax1.set_ylabel('y (mm)')
+ax1.set_aspect('equal')
+
+# 2. Vitesse u
+ax2 = plt.subplot(2, 3, 2)
+cp2 = ax2.contourf(X*1000, Y*1000, u_centered.T, levels=20, cmap='viridis')
+plt.colorbar(cp2, ax=ax2, label='u (m/s)')
+ax2.set_title('Vitesse Horizontale u')
+ax2.set_xlabel('x (mm)')
+ax2.set_ylabel('y (mm)')
+ax2.set_aspect('equal')
+
+# 3. Vitesse v
+ax3 = plt.subplot(2, 3, 3)
+cp3 = ax3.contourf(X*1000, Y*1000, v_centered.T, levels=20, cmap='seismic')
+plt.colorbar(cp3, ax=ax3, label='v (m/s)')
+ax3.set_title('Vitesse Verticale v')
+ax3.set_xlabel('x (mm)')
+ax3.set_ylabel('y (mm)')
+ax3.set_aspect('equal')
+
+# 4. Champ vectoriel
+ax4 = plt.subplot(2, 3, 4)
+skip = max(1, min(nx, ny) // 15)
+magnitude = np.sqrt(u_centered**2 + v_centered**2)
+cf = ax4.contourf(X*1000, Y*1000, magnitude.T, levels=15, cmap='plasma')
+plt.colorbar(cf, ax=ax4, label='|u| (m/s)')
+ax4.quiver(X[::skip, ::skip]*1000, Y[::skip, ::skip]*1000,
+           u_centered.T[::skip, ::skip], v_centered.T[::skip, ::skip],
+           color='white', scale=None, width=0.003)
+ax4.set_title('Champ de vitesse')
+ax4.set_xlabel('x (mm)')
+ax4.set_ylabel('y (mm)')
+ax4.set_aspect('equal')
+
+# 5. Profil de vitesse u (comparaison Poiseuille)
+ax5 = plt.subplot(2, 3, 5)
+ax5.plot(u_mid_profile, y_coords*1000, 'b-o', linewidth=2, markersize=4, label='MAC Grid')
+ax5.plot(u_poiseuille, y_coords*1000, 'r--', linewidth=2, label='Poiseuille')
+ax5.set_xlabel('u (m/s)')
+ax5.set_ylabel('y (mm)')
+ax5.set_title(f'Profil de vitesse (x = {x_p_coords[mid_i]*1000:.1f} mm)')
+ax5.legend()
+ax5.grid(True, alpha=0.3)
+
+# 6. Profil de pression
+ax6 = plt.subplot(2, 3, 6)
+mid_j = ny // 2
+p_centerline = p[:, mid_j]
+ax6.plot(x_p_coords*1000, p_centerline, 'b-o', linewidth=2, markersize=4, label='Numérique')
+
+P_linear = P_inlet + (P_out - P_inlet) * x_p_coords / L
+ax6.plot(x_p_coords*1000, P_linear, 'r--', linewidth=2, label='Linéaire')
+
+ax6.set_xlabel('x (mm)')
+ax6.set_ylabel('P (Pa)')
+ax6.set_title('Profil de pression (axe central)')
+ax6.legend()
+ax6.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('stokes_mac_neumann_results.png', dpi=150, bbox_inches='tight')
+plt.show()
