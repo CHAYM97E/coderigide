@@ -11,7 +11,7 @@ eta = 1.8e-5         # Viscosité (Pa·s)
 # Conditions aux limites de Pression
 P_inlet = 101375.0        # Pression à l'entrée (Pa)
 P_out = 101325.0          # Pression de sortie (Pa)
-P_ext = 100925.0          # Pression pleurale externe (Pa)
+P_ext = 101800.0          # Pression pleurale externe (Pa)
 
 # Paramètres de la loi de tube (Lambert et al., 1982)
 D_max = D_initial    # Diamètre maximum
