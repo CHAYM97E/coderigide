@@ -2,29 +2,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- 1. Paramètres de la simulation ---
-nx = 50              # Nombre de cellules en x
-ny = 40       # Nombre de cellules en y (demi-tube, partie supérieure)
-L = 0.0047      # Longueur du domaine (m)
-D_initial = 0.0013 # Diamètre initial du tube (m)
+nx = 20             # Nombre de cellules en x
+ny = 10       # Nombre de cellules en y (demi-tube, partie supérieure)
+L = 0.0047   # Longueur du domaine (m)
+D_initial = 1.37e-3 # Diamètre initial du tube (m)
 eta = 1.8e-5         # Viscosité (Pa·s)
 
 # Conditions aux limites de Pression
-P_inlet = 101477.68 # +50 Pa (≈ 0.5 cmH2O)
-P_out = 101465.93   # -50 Pa
-P_ext = 101724    # Atmosphérique# Pression pleurale externe (Pa)
+P_inlet = 10
+P_out = 0
+P_ext = 5 # Atmosphérique# Pression pleurale externe (Pa)
 
 # Paramètres de la loi de tube (Lambert et al., 1982)
 D_max = D_initial    # Diamètre maximum
-alpha_0 = 0.153
-alpha_1 = 0.000194
+alpha_0 = 0.102
+alpha_1 = 1.94e-3
 n1 = 1
 n2 = 10
-P1 = ((alpha_0*n1)/alpha_1)*98.0665
-P2 = ((-n2*(1-alpha_0))/alpha_1)*98.0665
+P1 = ((alpha_0*n1)/alpha_1)
+P2 = ((-n2*(1-alpha_0))/alpha_1)
 
 # Paramètres de convergence
 max_iterations = 50
-tolerance = 1e-3
+tolerance = 1e-4
 
 print("="*60)
 print("SIMULATION STOKES - TUBE SOUPLE AVEC DÉFORMATION")
@@ -334,8 +334,8 @@ Zv = v_full.T.copy()
 R_profile_final_mm = R_profile_final * 1000
 x_p_coords_mm = x_p_coords  # Déjà en mm
 
-# --- Figure 1: Champs de Pression, Vitesse U et Vitesse V ---
-fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 14))
+# --- Figure 1: Champs de Pression, Vitesse U et Vitesse V (MOINS ENCOMBRÉ) ---
+fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 16))
 fig1.suptitle(f'Simulation FSI Convergée (D_final moyen = {D_final_mean*1000:.4f} mm)', fontsize=16)
 
 # a) Champ de Pression
@@ -374,7 +374,7 @@ ax3.set_aspect('auto')
 ax3.legend()
 ax3.grid(True, alpha=0.3)
 
-fig1.tight_layout(rect=[0, 0.03, 1, 0.97])
+fig1.tight_layout(rect=[0, 0.03, 1, 0.98], h_pad=3.0)
 
 # SAUVEGARDE de la Figure 1
 fig1.savefig('figure1_champs_FSI.png', dpi=300, bbox_inches='tight')
@@ -404,6 +404,10 @@ ax_geom.set_xlabel('x (mm)')
 ax_geom.set_ylabel('y (mm)')
 if np.max(R_profile_final_mm) > 0:
     ax_geom.set_ylim(bottom=-np.max(R_profile_final_mm)*1.5, top=np.max(R_profile_final_mm)*1.5)
+
+# Définir les graduations en multiples de 0.25 mm
+from matplotlib.ticker import MultipleLocator
+ax_geom.yaxis.set_major_locator(MultipleLocator(0.01))
 ax_geom.set_aspect('auto')
 ax_geom.legend()
 ax_geom.grid(True)
@@ -414,15 +418,76 @@ fig2.tight_layout()
 fig2.savefig('figure2_convergence_geometrie.png', dpi=300, bbox_inches='tight')
 print("✓ Figure 2 sauvegardée : figure2_convergence_geometrie.png")
 
+# --- NOUVELLE Figure 3: Profils de vitesse u(y) pour différentes sections (TUBE COMPLET) ---
+fig3, ax_uy = plt.subplots(1, 1, figsize=(10, 8))
+
+# Sélectionner quelques sections représentatives
+sections_indices = [0, nx//4, nx//2, 3*nx//4, nx-1]
+colors = ['blue', 'green', 'orange', 'red', 'purple']
+
+for idx, i in enumerate(sections_indices):
+    # Extraire u pour cette section (tube complet avec miroir)
+    u_section_top = u_centered[i, :]  # Partie supérieure
+    u_section_bottom = np.flip(u_section_top)  # Miroir pour partie inférieure
+    u_section_full = np.concatenate((u_section_bottom, u_section_top))
+    
+    # Coordonnées y pour le tube complet (de -R à +R)
+    y_section_full = y_p_coords_full  # Déjà en mm, de -R à +R
+    
+    # Position x de cette section
+    x_pos = x_p_coords_mm[i]
+    
+    # Tracer le profil
+    ax_uy.plot(u_section_full, y_section_full, marker='o', color=colors[idx], 
+               label=f'x = {x_pos:.2f} mm', linewidth=2, markersize=4)
+
+ax_uy.set_xlabel('Vitesse u (m/s)', fontsize=12)
+ax_uy.set_ylabel('y (mm)', fontsize=12)
+ax_uy.set_title('Profils de Vitesse u(y) pour Différentes Sections - Tube Complet', fontsize=14)
+ax_uy.legend(fontsize=10)
+ax_uy.grid(True, alpha=0.3)
+ax_uy.axhline(0, color='k', linewidth=1, linestyle='--', label='Axe central')
+
+fig3.tight_layout()
+
+# SAUVEGARDE de la Figure 3
+fig3.savefig('figure3_profils_uy.png', dpi=300, bbox_inches='tight')
+print("✓ Figure 3 sauvegardée : figure3_profils_uy.png")
+
+# --- NOUVELLE Figure 4: Pression P(x) ---
+fig4, ax_px = plt.subplots(1, 1, figsize=(10, 6))
+
+# Calculer la pression moyenne le long de x
+p_mean_x = np.mean(p, axis=1)  # Moyenne sur y pour chaque x
+
+# Tracer P(x)
+ax_px.plot(x_p_coords_mm, p_mean_x, 'b-', marker='o', linewidth=2, label='P(x)')
+ax_px.axhline(P_ext, color='r', linestyle='--', linewidth=2, label=f'P_ext = {P_ext} Pa')
+ax_px.set_xlabel('x (mm)', fontsize=12)
+ax_px.set_ylabel('Pression (Pa)', fontsize=12)
+ax_px.set_title('Distribution de Pression le long du Tube P(x)', fontsize=14)
+ax_px.legend(fontsize=10)
+ax_px.grid(True, alpha=0.3)
+
+fig4.tight_layout()
+
+# SAUVEGARDE de la Figure 4
+fig4.savefig('figure4_pression_px.png', dpi=300, bbox_inches='tight')
+print("✓ Figure 4 sauvegardée : figure4_pression_px.png")
+
 print("\n" + "="*60)
 print("IMAGES SAUVEGARDÉES AVEC SUCCÈS !")
 print("="*60)
 print("Les fichiers suivants ont été créés :")
 print("  1. figure1_champs_FSI.png")
 print("  2. figure2_convergence_geometrie.png")
+print("  3. figure3_profils_uy.png")
+print("  4. figure4_pression_px.png")
 print("\nPour utiliser dans Beamer LaTeX :")
 print("  \\includegraphics[width=0.85\\textwidth]{figure1_champs_FSI.png}")
 print("  \\includegraphics[width=0.85\\textwidth]{figure2_convergence_geometrie.png}")
+print("  \\includegraphics[width=0.85\\textwidth]{figure3_profils_uy.png}")
+print("  \\includegraphics[width=0.85\\textwidth]{figure4_pression_px.png}")
 print("="*60 + "\n")
 
 # Afficher les figures
